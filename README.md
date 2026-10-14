@@ -1,5 +1,14 @@
 # Novamira HQ
 
+> **Unofficial Hostinger Agency support contribution.**
+> Start with the [review package](docs/hostinger-agency/README.md),
+> [English support message](docs/hostinger-agency/SUPPORT-MESSAGE.md), and
+> [one-commit integration guide](docs/hostinger-agency/INTEGRATION.md).
+> Agency listing and URL-connection routing are implemented; automatic Agency
+> provisioning is not. Repeated macOS credential prompts in the local ad-hoc
+> build require the [official signed-release solution](docs/hostinger-agency/CREDENTIALS.md).
+> This repository is a source handoff, not an official downloadable app update.
+
 **All your WordPress sites. One connection for your AI. A free and open source
 desktop app.**
 

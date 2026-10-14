@@ -6,3 +6,6 @@
 *.ico binary
 *.zip binary
 *.gz binary
+
+# Mail patches contain significant context prefixes and a format-patch signature.
+patches/*.patch -whitespace

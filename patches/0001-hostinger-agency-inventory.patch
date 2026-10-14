@@ -1,0 +1,584 @@
+From ebaaaca68fe2429ea2d2ab19b1194944556389fa Mon Sep 17 00:00:00 2001
+From: "AGENTUR.STUDIO" <268943763+AGENTUR-STUDIO@users.noreply.github.com>
+Date: Wed, 14 Oct 2026 16:12:48 +0200
+Subject: [PATCH] fix(hostinger): list Agency websites and route connections
+ without classic setup
+
+---
+ README.md                                 |  13 ++
+ src/hosting/providers/hostinger-agency.ts | 131 +++++++++++++++++
+ src/hosting/providers/hostinger.ts        |  38 ++++-
+ src/web/views/sites.ts                    |   7 +-
+ test/hostinger-agency-contract.test.mjs   | 170 ++++++++++++++++++++++
+ test/hostinger-provider-contract.test.mjs |  17 ++-
+ test/web-sites-contract.test.mjs          |  38 +++++
+ 7 files changed, 406 insertions(+), 8 deletions(-)
+ create mode 100644 src/hosting/providers/hostinger-agency.ts
+ create mode 100644 test/hostinger-agency-contract.test.mjs
+
+diff --git a/README.md b/README.md
+index 4cb9803..cfb2f2e 100644
+--- a/README.md
++++ b/README.md
+@@ -61,6 +61,19 @@ reseller's create-user-session privilege; listing needs list-accts. A root
+ token controls the whole server, so create one for HQ and revoke it from
+ WHM » Development » Manage API Tokens.
+ 
++### Hostinger Agency hosting
++
++Unscoped Hostinger profiles list both classic and Agency websites. An explicit
++hosting username scopes the inventory to classic hosting only. Agency IDs use
++`agency:<website_uid>` and expose one synthetic live environment. Listing does
++not establish that a website is WordPress or that Novamira is installed.
++
++Agency plugin installation and other hosting operations are not implemented.
++Install and activate the official Novamira ZIP in WordPress, enable AI Abilities
++with the owner's approval, then use Connect to authorize the site by URL. Agency
++Connect does not offer the classic hosting installer. API failures are surfaced
++rather than being treated as an empty successful inventory.
++
+ ## How it works
+ 
+ 1. Add a hosting account or a WordPress site.
+diff --git a/src/hosting/providers/hostinger-agency.ts b/src/hosting/providers/hostinger-agency.ts
+new file mode 100644
+index 0000000..65c8aba
+--- /dev/null
++++ b/src/hosting/providers/hostinger-agency.ts
+@@ -0,0 +1,131 @@
++// SPDX-FileCopyrightText: 2026 Ovation S.r.l. <dev@novamira.ai>
++// SPDX-License-Identifier: AGPL-3.0-or-later
++
++import { CliError } from "../../errors.js";
++import { asRecord } from "../../json.js";
++import type { HttpClient } from "../http-client.js";
++import type { HostingSite } from "../types.js";
++
++export const AGENCY_PREFIX = "agency:";
++
++function invalid(message: string): never {
++  throw new CliError(
++    "provider_error",
++    `Hostinger Agency inventory: ${message}`,
++  );
++}
++
++function text(value: unknown): string {
++  return typeof value === "string" ? value : "";
++}
++
++function domainOf(value: unknown): string {
++  const record = asRecord(value);
++  const candidate = text(record?.fqdn) || text(record?.domain) || text(value);
++  return /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9-]+$/i.test(candidate)
++    ? candidate
++    : "";
++}
++
++function siteOf(value: unknown, includeEnvironments: boolean): HostingSite {
++  const item = asRecord(value);
++  const details = asRecord(item?.details);
++  const id = text(item?.id);
++  if (!item || !details || !id || !text(item.platform) || !text(item.state))
++    invalid("invalid website record; listing is incomplete.");
++  const domains = Array.isArray(details.domains) ? details.domains : [];
++  const domain =
++    domains.map(domainOf).find(Boolean) ??
++    (domainOf(details.vhost) || domainOf(details.preview_domain));
++  const identity = `${AGENCY_PREFIX}${id}`;
++  const name = domain || text(details.title) || text(details.description) || id;
++  return {
++    id: identity,
++    name,
++    displayName: `${name} (Agency ${text(item.platform)})`,
++    status: text(item.state),
++    ...(domain ? { primaryDomain: domain } : {}),
++    ...(includeEnvironments
++      ? {
++          environments: [
++            {
++              id: identity,
++              name: "live",
++              displayName: "Live (Agency; connect WordPress by URL)",
++              isBlocked: item.state !== "active",
++              isPremium: false,
++              ...(domain ? { primaryDomain: domain } : {}),
++            },
++          ],
++        }
++      : {}),
++  };
++}
++
++/** Agency plans have a separate API and must never use classic hosting writes. */
++export async function listAgencySites(
++  http: HttpClient,
++  includeEnvironments: boolean,
++): Promise<HostingSite[]> {
++  const sites: HostingSite[] = [];
++  const seen = new Set<string>();
++  for (let page = 1; page <= 2500; page++) {
++    const response = asRecord(
++      await http.json({
++        path: `${http.baseUrl.replace(/\/$/, "")}/api/agency-hosting/v1/websites`,
++        query: [
++          ["page", String(page)],
++          ["per_page", "50"],
++        ],
++      }),
++    );
++    const meta = asRecord(response?.meta);
++    if (
++      !response ||
++      !Array.isArray(response.data) ||
++      meta?.current_page !== page ||
++      !Number.isInteger(meta.per_page) ||
++      Number(meta.per_page) < 1 ||
++      !Number.isInteger(meta.total) ||
++      Number(meta.total) < 0
++    )
++      invalid("invalid response or pagination; listing is incomplete.");
++    for (const row of response.data) {
++      const site = siteOf(row, includeEnvironments);
++      if (seen.has(site.id)) invalid("duplicate website ID across pages.");
++      seen.add(site.id);
++      sites.push(site);
++    }
++    if (page * Number(meta.per_page) >= Number(meta.total)) return sites;
++    if (response.data.length === 0) invalid("empty page before the end.");
++  }
++  return invalid("pagination limit exceeded; listing is incomplete.");
++}
++
++export async function getAgencySite(
++  http: HttpClient,
++  id: string,
++): Promise<HostingSite> {
++  const site = (await listAgencySites(http, true)).find(
++    (item) => item.id === id,
++  );
++  if (!site)
++    throw new CliError(
++      "not_found",
++      `Hostinger Agency website "${id}" was not found.`,
++    );
++  return site;
++}
++
++export function rejectAgencyOperation(request: object): void {
++  for (const key of ["envId", "siteId"] as const) {
++    if (
++      key in request &&
++      String(request[key as keyof typeof request]).startsWith(AGENCY_PREFIX)
++    )
++      throw new CliError(
++        "provider_unsupported",
++        "Hostinger Agency hosting operations are not implemented. Install and activate Novamira in WordPress, then connect the site by URL. Classic hosting operations cannot be used for this target.",
++      );
++  }
++}
+diff --git a/src/hosting/providers/hostinger.ts b/src/hosting/providers/hostinger.ts
+index 3d273c7..4ab271e 100644
+--- a/src/hosting/providers/hostinger.ts
++++ b/src/hosting/providers/hostinger.ts
+@@ -20,6 +20,12 @@
+  */
+ 
+ import { Buffer } from "node:buffer";
++import {
++  AGENCY_PREFIX,
++  getAgencySite,
++  listAgencySites,
++  rejectAgencyOperation,
++} from "./hostinger-agency.js";
+ import {
+   setupHostingerNovamira,
+   hostingerPluginInventory,
+@@ -84,12 +90,20 @@ const CAPABILITIES: readonly ProviderCapabilityInput[] = [
+   [
+     "novamira.setup",
+     true,
+-    "Installs Novamira through a bounded ZIP-upload setup; no public API WP-CLI required",
++    "Classic hosting only: installs Novamira through a bounded ZIP-upload setup. Agency sites require manual plugin installation and connection by URL.",
+   ],
+   ["providers.validate", true],
+   ["providers.capabilities", true],
+-  ["sites.list", true, "uses GET /api/hosting/v1/websites"],
+-  ["sites.get", true, "uses GET /api/hosting/v1/websites filtered by domain"],
++  [
++    "sites.list",
++    true,
++    "uses classic and Agency website inventories; an explicit username limits the result to classic hosting",
++  ],
++  [
++    "sites.get",
++    true,
++    "Classic sites are looked up by domain; Agency sites by their agency: ID",
++  ],
+   ["envs.list", true, NOTE_SYNTHETIC_ENV],
+   ["envs.get", true, NOTE_SYNTHETIC_ENV],
+   ["ops.get", false, NOTE_NOT_MAPPED],
+@@ -139,7 +153,7 @@ const CAPABILITIES: readonly ProviderCapabilityInput[] = [
+   [
+     "wp.plugins.list",
+     true,
+-    "Uses the verified WordPress installation plugin inventory",
++    "Classic hosting only: uses the verified WordPress installation plugin inventory",
+   ],
+   [
+     "wp.plugins.install",
+@@ -312,12 +326,20 @@ class HostingerClient implements ProviderClient {
+     ];
+     if (username !== undefined && username !== "")
+       query.push(["username", username]);
+-    return (await this.#listWebsites(query)).map((website) =>
++    const classic = (await this.#listWebsites(query)).map((website) =>
+       websiteToSite(website, includeEnvironments),
+     );
++    // An explicit classic username is a scope, not an Agency account ID.
++    if (username) return classic;
++    return [
++      ...classic,
++      ...(await listAgencySites(this.#http, includeEnvironments)),
++    ];
+   }
+ 
+   async getSite(siteId: string): Promise<HostingSite> {
++    if (siteId.startsWith(AGENCY_PREFIX))
++      return getAgencySite(this.#http, siteId);
+     const websites = await this.#listWebsites([
+       ["page", "1"],
+       ["per_page", PAGE_SIZE],
+@@ -331,6 +353,10 @@ class HostingerClient implements ProviderClient {
+   }
+ 
+   async listEnvironments(siteId: string): Promise<HostingEnvironment[]> {
++    if (siteId.startsWith(AGENCY_PREFIX))
++      return [
++        ...((await getAgencySite(this.#http, siteId)).environments ?? []),
++      ];
+     const websites = await this.#listWebsites([
+       ["page", "1"],
+       ["per_page", PAGE_SIZE],
+@@ -357,6 +383,7 @@ class HostingerClient implements ProviderClient {
+   }
+ 
+   async read(request: ReadRequest): Promise<unknown> {
++    rejectAgencyOperation(request);
+     switch (request.kind) {
+       case "plugins":
+         return hostingerPluginInventory(this.#http, request.envId);
+@@ -415,6 +442,7 @@ class HostingerClient implements ProviderClient {
+   }
+ 
+   async action(request: ActionRequest): Promise<ActionResult> {
++    rejectAgencyOperation(request);
+     switch (request.kind) {
+       case "setup-novamira":
+         return setupHostingerNovamira(this.#http, this.#transferFetch, request);
+diff --git a/src/web/views/sites.ts b/src/web/views/sites.ts
+index be5a4d3..487e15f 100644
+--- a/src/web/views/sites.ts
++++ b/src/web/views/sites.ts
+@@ -646,7 +646,9 @@ function renderConnectButton(
+   );
+   return html`<button class="button tiny" type="button"${attr(
+     "title",
+-    `Check Novamira, then authorize access in your browser. novamira-hq site-cli auth login ${address}`,
++    group.provider === "hostinger" && env.id.startsWith("agency:")
++      ? "Hostinger Agency: install and activate Novamira in WordPress first, then connect by URL. Automatic hosting setup is not available."
++      : `Check Novamira, then authorize access in your browser. novamira-hq site-cli auth login ${address}`,
+   )}${ds.indicator(busy)}${ds.attrs({ disabled: signal(busy) })}${ds.on("click", action)}><span${ds.classes({ hidden: signal(busy) })}>Connect</span><span class="loading-inline ds-toggle"${ds.classes({ open: signal(busy) })} role="status">Connecting…</span></button>`;
+ }
+ 
+@@ -656,7 +658,8 @@ function setupSupported(
+ ): boolean {
+   return (
+     NOVAMIRA_SETUP_PROVIDERS.has(provider) &&
+-    (provider !== "plesk" || env.id.startsWith("wp:"))
++    (provider !== "plesk" || env.id.startsWith("wp:")) &&
++    (provider !== "hostinger" || !env.id.startsWith("agency:"))
+   );
+ }
+ 
+diff --git a/test/hostinger-agency-contract.test.mjs b/test/hostinger-agency-contract.test.mjs
+new file mode 100644
+index 0000000..dde57fb
+--- /dev/null
++++ b/test/hostinger-agency-contract.test.mjs
+@@ -0,0 +1,170 @@
++// SPDX-FileCopyrightText: 2026 Ovation S.r.l. <dev@novamira.ai>
++// SPDX-License-Identifier: AGPL-3.0-or-later
++
++import assert from "node:assert/strict";
++import test from "node:test";
++import {
++  listAgencySites,
++  getAgencySite,
++} from "../dist/hosting/providers/hostinger-agency.js";
++import { createHostingerClient } from "../dist/hosting/providers/hostinger.js";
++import { SecretValue } from "../dist/credentials/resolve.js";
++
++const row = (id, details = {}, state = "active", platform = "h5g") => ({
++  id,
++  platform,
++  state,
++  details: { domains: [{ fqdn: `${id}.example.com` }], ...details },
++});
++const page = (data, current_page = 1, per_page = 50, total = data.length) => ({
++  data,
++  meta: { current_page, per_page, total },
++});
++function mock(responses) {
++  const calls = [];
++  return {
++    calls,
++    baseUrl: "https://developers.hostinger.com",
++    async json(request) {
++      calls.push(request);
++      assert.ok(responses.length, "unexpected HTTP request");
++      const value = responses.shift();
++      if (value instanceof Error) throw value;
++      return value;
++    },
++  };
++}
++function client(http) {
++  return createHostingerClient({
++    secret: new SecretValue("test-placeholder", "env", "env:TEST"),
++    baseUrl: http.baseUrl,
++    credentialSource: "env:TEST",
++    createHttpClient: () => http,
++  });
++}
++
++test("Agency-only account returns sites and correct endpoint", async () => {
++  const http = mock([page([]), page([row("one")])]);
++  const sites = await client(http).listSites({ includeEnvironments: true });
++  assert.equal(sites.length, 1);
++  assert.equal(sites[0].id, "agency:one");
++  assert.equal(sites[0].primaryDomain, "one.example.com");
++  assert.equal(sites[0].environments[0].id, "agency:one");
++  assert.equal(sites[0].environments[0].isBlocked, false);
++  assert.equal(
++    http.calls[1].path,
++    "https://developers.hostinger.com/api/agency-hosting/v1/websites",
++  );
++});
++
++test("mixed accounts preserve classic and Agency identity even for the same domain", async () => {
++  const http = mock([
++    page([{ domain: "one.example.com", username: "u1", is_enabled: true }]),
++    page([row("one")]),
++  ]);
++  const sites = await client(http).listSites();
++  assert.deepEqual(
++    sites.map((s) => s.id),
++    ["one.example.com", "agency:one"],
++  );
++  assert.equal(sites[1].environments, undefined);
++});
++
++test("Agency pagination requests every page", async () => {
++  const http = mock([page([row("one")], 1, 1, 2), page([row("two")], 2, 1, 2)]);
++  const sites = await listAgencySites(http, false);
++  assert.equal(sites.length, 2);
++  assert.deepEqual(http.calls[1].query, [
++    ["page", "2"],
++    ["per_page", "50"],
++  ]);
++});
++
++test("Builder and preview-only sites map domains; suspended sites stay blocked", async () => {
++  const sites = await listAgencySites(
++    mock([
++      page([
++        row("preview", {
++          domains: [],
++          preview_domain: { fqdn: "preview.hostingersite.com" },
++        }),
++        row(
++          "builder",
++          { domains: [], vhost: "builder.example.com" },
++          "suspended",
++          "builder",
++        ),
++      ]),
++    ]),
++    true,
++  );
++  assert.equal(sites[0].primaryDomain, "preview.hostingersite.com");
++  assert.equal(sites[1].primaryDomain, "builder.example.com");
++  assert.equal(sites[1].environments[0].isBlocked, true);
++});
++
++test("Agency site and environment lookup use exact IDs", async () => {
++  const http = mock([page([row("one"), row("two")]), page([row("one")])]);
++  assert.equal((await client(http).getSite("agency:two")).id, "agency:two");
++  assert.equal(
++    (await client(http).listEnvironments("agency:one"))[0].id,
++    "agency:one",
++  );
++  await assert.rejects(
++    getAgencySite(mock([page([row("one")])]), "agency:missing"),
++    /not found/,
++  );
++});
++
++test("Agency API failure never becomes an empty successful inventory", async () => {
++  await assert.rejects(
++    client(mock([page([]), new Error("provider rejected access")])).listSites(),
++    /rejected access/,
++  );
++});
++
++test("malformed Agency responses fail explicitly", async () => {
++  for (const response of [
++    {},
++    page([{}]),
++    page([], 0),
++    page([], 1, 0),
++    page([], 1, 50, 51),
++  ]) {
++    await assert.rejects(listAgencySites(mock([response]), true), /inventory/);
++  }
++});
++
++test("repeated Agency pages cannot silently truncate or duplicate inventory", async () => {
++  await assert.rejects(
++    listAgencySites(
++      mock([page([row("one")], 1, 1, 2), page([row("one")], 2, 1, 2)]),
++      true,
++    ),
++    /duplicate/,
++  );
++  await assert.rejects(
++    listAgencySites(
++      mock([page([row("one")], 1, 1, 2), page([row("two")], 1, 1, 2)]),
++      true,
++    ),
++    /pagination/,
++  );
++});
++
++test("Agency targets cannot enter classic provisioning or plugin endpoints", async () => {
++  const http = mock([]);
++  await assert.rejects(
++    client(http).action({
++      kind: "setup-novamira",
++      envId: "agency:one",
++      enableAiAbilities: true,
++    }),
++    /not implemented/,
++  );
++  await assert.rejects(
++    client(http).read({ kind: "plugins", envId: "agency:one" }),
++    /not implemented/,
++  );
++  assert.equal(http.calls.length, 0);
++});
+diff --git a/test/hostinger-provider-contract.test.mjs b/test/hostinger-provider-contract.test.mjs
+index 9f1620e..92ba1ac 100644
+--- a/test/hostinger-provider-contract.test.mjs
++++ b/test/hostinger-provider-contract.test.mjs
+@@ -212,6 +212,13 @@ test("hostinger lists sites", async () => {
+         meta: { current_page: 1, per_page: 50, total: 1 },
+       }),
+     },
++    {
++      expected: "GET /api/agency-hosting/v1/websites?page=1&per_page=50",
++      body: JSON.stringify({
++        data: [],
++        meta: { current_page: 1, per_page: 50, total: 0 },
++      }),
++    },
+   ]);
+   try {
+     const sites = await client(server.baseUrl).listSites({
+@@ -246,6 +253,13 @@ test("hostinger lists sites returns an empty array", async () => {
+         meta: { current_page: 1, per_page: 50, total: 0 },
+       }),
+     },
++    {
++      expected: "GET /api/agency-hosting/v1/websites?page=1&per_page=50",
++      body: JSON.stringify({
++        data: [],
++        meta: { current_page: 1, per_page: 50, total: 0 },
++      }),
++    },
+   ]);
+   try {
+     const sites = await client(server.baseUrl).listSites({
+@@ -375,7 +389,8 @@ test("hostinger reports its capability table", async () => {
+     assert.deepEqual(byName.get("sites.list"), {
+       name: "sites.list",
+       supported: true,
+-      notes: "uses GET /api/hosting/v1/websites",
++      notes:
++        "uses classic and Agency website inventories; an explicit username limits the result to classic hosting",
+     });
+     assert.deepEqual(byName.get("ops.get"), {
+       name: "ops.get",
+diff --git a/test/web-sites-contract.test.mjs b/test/web-sites-contract.test.mjs
+index 5c9b8f5..6bed9c1 100644
+--- a/test/web-sites-contract.test.mjs
++++ b/test/web-sites-contract.test.mjs
+@@ -137,6 +137,7 @@ const CONFIG = {
+ 
+ const ENVIRONMENT = {
+   KINSTA_API_KEY: "kinsta-fake",
++  HOSTINGER_API_TOKEN: "hostinger-fake",
+   PANTHEON_MACHINE_TOKEN: "pantheon-fake",
+   CPANEL_API_TOKEN: "cpanel-fake-not-a-real-secret",
+   WHM_API_TOKEN: "whm-fake-not-a-real-secret",
+@@ -310,6 +311,7 @@ async function fixture(options = {}) {
+   const hosting = createHostingClientFactory({
+     store,
+     registry: {
++      hostinger: () => client("hostinger", options.hostingerSites ?? []),
+       kinsta: () => client("kinsta", options.kinstaSites ?? KINSTA_SITES),
+       pantheon: () =>
+         client("pantheon", options.pantheonSites ?? PANTHEON_SITES),
+@@ -1665,3 +1667,39 @@ test("21: invalid rename values spawn nothing", async () => {
+     assert.ok(recorder.find("toast").markup.includes("danger"), newName);
+   }
+ });
++
++test("Hostinger Agency Connect skips unsupported provisioning; classic setup stays available", async () => {
++  const config = {
++    version: 1,
++    hostingProfiles: {
++      host: {
++        provider: "hostinger",
++        credential: { type: "env", name: "HOSTINGER_API_TOKEN" },
++      },
++    },
++    pushes: {},
++  };
++  const hostingerSites = ["agency:example", "classic.example.test"].map(
++    (id) => ({
++      id,
++      name: id,
++      displayName: id,
++      status: "active",
++      primaryDomain: "wp.example.test",
++      environments: [env(id, { primaryDomain: "wp.example.test" })],
++    }),
++  );
++  const { markup } = await resultMarkup({ config, hostingerSites });
++  const agencyButton = /<button[^>]*title="Hostinger Agency:[^>]*>/.exec(
++    markup,
++  )?.[0];
++  assert.ok(
++    agencyButton,
++    "Agency connection explains the manual installation step",
++  );
++  const agencyTarget = decodeURIComponent(agencyButton);
++  assert.match(agencyTarget, /url=https:\/\/wp.example.test/);
++  assert.doesNotMatch(agencyTarget, /hosting_profile=|[?&]env=/);
++  assert.match(markup, /hosting_profile=host/);
++  assert.equal(markup.split("hosting_profile=host").length - 1, 1);
++});
+-- 
+2.50.1 (Apple Git-155)
+
