@@ -64,6 +64,12 @@ grant Novamira write/admin access or any access to Hostinger. The upstream
 AGPL-3.0-or-later license and notices are retained. No vendor signing key is
 included or requested. The support message is a draft and has not been sent.
 
+GitHub Actions has read-only default token permissions and cannot approve pull
+requests. The inherited vendor release/signing workflows are disabled in this
+repository, and the upstream dependency-update schedule was removed from this
+handoff branch. The offline contribution checks remain enabled. No additional
+collaborator has been granted write or administrator access.
+
 ## Primary references
 
 - [Upstream baseline](https://github.com/use-novamira/novamira-hq/tree/68741369c9d75283c9b46d5ea6387159b84d5b00)

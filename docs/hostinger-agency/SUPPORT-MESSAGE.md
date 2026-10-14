@@ -70,6 +70,7 @@ cherry-pickable implementation commit, a `git am` patch, tests, integration
 instructions, known limitations and a follow-up plan. The local full check passed:
 1,600 tests, 1,597 passed, 3 skipped, 0 failed. Public read access requires no
 invitation; there are no credentials or customer domains in the contribution.
+The independent Linux/Node 24 GitHub Actions review check also passed.
 
 Could you confirm the intended Agency API support and review the patch for an
 upcoming release? We would particularly appreciate guidance on the supported

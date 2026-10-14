@@ -54,5 +54,9 @@ admin pages and live provider payloads are intentionally omitted.
 - Removal of prompts in an official build carrying this patch; vendor signing and
   the acceptance scenario in CREDENTIALS.md remain necessary.
 
-See the repository's Actions tab for independently executed review checks. Only
-a completed successful run is evidence of GitHub CI success.
+The independent Linux/Node 24 review check completed successfully for handoff
+commit `785f048b12835cd8dfcd092a886d657bcb8139fa`:
+[GitHub Actions run 38579324630](https://github.com/AGENTUR-STUDIO/novamira-hq-hostinger-agency/actions/runs/38579324630).
+That commit contains the exact implementation above plus the initial handoff
+documents and CI configuration. Later documentation-only updates do not change
+the implementation commit. See the Actions tab for checks of subsequent heads.
