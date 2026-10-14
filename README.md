@@ -61,6 +61,19 @@ reseller's create-user-session privilege; listing needs list-accts. A root
 token controls the whole server, so create one for HQ and revoke it from
 WHM » Development » Manage API Tokens.
 
+### Hostinger Agency hosting
+
+Unscoped Hostinger profiles list both classic and Agency websites. An explicit
+hosting username scopes the inventory to classic hosting only. Agency IDs use
+`agency:<website_uid>` and expose one synthetic live environment. Listing does
+not establish that a website is WordPress or that Novamira is installed.
+
+Agency plugin installation and other hosting operations are not implemented.
+Install and activate the official Novamira ZIP in WordPress, enable AI Abilities
+with the owner's approval, then use Connect to authorize the site by URL. Agency
+Connect does not offer the classic hosting installer. API failures are surfaced
+rather than being treated as an empty successful inventory.
+
 ## How it works
 
 1. Add a hosting account or a WordPress site.

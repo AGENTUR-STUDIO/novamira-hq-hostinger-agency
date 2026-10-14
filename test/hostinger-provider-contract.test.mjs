@@ -212,6 +212,13 @@ test("hostinger lists sites", async () => {
         meta: { current_page: 1, per_page: 50, total: 1 },
       }),
     },
+    {
+      expected: "GET /api/agency-hosting/v1/websites?page=1&per_page=50",
+      body: JSON.stringify({
+        data: [],
+        meta: { current_page: 1, per_page: 50, total: 0 },
+      }),
+    },
   ]);
   try {
     const sites = await client(server.baseUrl).listSites({
@@ -241,6 +248,13 @@ test("hostinger lists sites returns an empty array", async () => {
   const server = await startServer([
     {
       expected: "GET /api/hosting/v1/websites?page=1&per_page=50",
+      body: JSON.stringify({
+        data: [],
+        meta: { current_page: 1, per_page: 50, total: 0 },
+      }),
+    },
+    {
+      expected: "GET /api/agency-hosting/v1/websites?page=1&per_page=50",
       body: JSON.stringify({
         data: [],
         meta: { current_page: 1, per_page: 50, total: 0 },
@@ -375,7 +389,8 @@ test("hostinger reports its capability table", async () => {
     assert.deepEqual(byName.get("sites.list"), {
       name: "sites.list",
       supported: true,
-      notes: "uses GET /api/hosting/v1/websites",
+      notes:
+        "uses classic and Agency website inventories; an explicit username limits the result to classic hosting",
     });
     assert.deepEqual(byName.get("ops.get"), {
       name: "ops.get",
